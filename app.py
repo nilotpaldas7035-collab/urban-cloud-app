@@ -1,87 +1,70 @@
 import streamlit as st
+import sqlite3
 import pandas as pd
-from streamlit_gsheets import GSheetsConnection
 from datetime import datetime
 
-# Basic setup for Urban Cloud
-st.set_page_config(page_title="Urban Cloud Kitchen", layout="centered")
+# --- DATABASE LOGIC ---
+# This creates a local file named 'kitchen.db' to store your data
+def init_db():
+    conn = sqlite3.connect('kitchen.db', check_same_thread=False)
+    c = conn.cursor()
+    # Create Menu table
+    c.execute('CREATE TABLE IF NOT EXISTS menu (item TEXT, price REAL)')
+    # Create Orders table
+    c.execute('CREATE TABLE IF NOT EXISTS orders (id TEXT, customer TEXT, items TEXT, total REAL, status TEXT)')
+    
+    # Add some starting items if the menu is empty
+    c.execute('SELECT count(*) FROM menu')
+    if c.fetchone()[0] == 0:
+        sample_menu = [('Margherita Pizza', 299), ('Veg Burger', 149), ('Chocolate Cake', 450)]
+        c.executemany('INSERT INTO menu VALUES (?,?)', sample_menu)
+    conn.commit()
+    return conn
 
-# The clean link to your sheet
-URL = "https://docs.google.com/spreadsheets/d/1KOluGnPsB518wJMvhTKZVNZessmJlsTioUxpbgv19_E/edit#gid=0"
+conn = init_db()
 
-# Connect to Google Sheets
-conn = st.connection("gsheets", type=GSheetsConnection)
+# --- APP INTERFACE ---
+st.title("👨‍🍳 Urban Cloud Kitchen")
 
-st.title("👨‍🍳 Urban Cloud")
-st.write("Guwahati's Cloud Kitchen")
+tab1, tab2 = st.tabs(["🛍️ Order Food", "🔑 Admin Dashboard"])
 
-# Tab navigation
-tab1, tab2 = st.tabs(["🛍️ Customer Menu", "🔑 Admin (Manish)"])
-
-# --- CUSTOMER MENU ---
 with tab1:
-    try:
-        # Load the Menu tab
-        # We add 'ttl=0' to make sure it always shows the newest items
-        df = conn.read(spreadsheet=URL, worksheet="Menu", ttl=0)
+    st.subheader("Menu")
+    menu_data = pd.read_sql('SELECT * FROM menu', conn)
+    
+    with st.form("order_form"):
+        name = st.text_input("Your Name")
+        choices = st.multiselect("Pick your items", menu_data['item'].tolist())
+        submit = st.form_submit_button("Place Order")
         
-        if not df.empty:
-            st.subheader("Order Food")
-            name = st.text_input("Your Name")
-            item_list = df['Item'].tolist()
-            choice = st.multiselect("Select your items", item_list)
+        if submit and name and choices:
+            total = menu_data[menu_data['item'].isin(choices)]['price'].sum()
+            order_id = datetime.now().strftime("%H%M%S")
+            items_str = ", ".join(choices)
             
-            if st.button("Submit Order"):
-                if name and choice:
-                    # Create a simple order record
-                    order_data = pd.DataFrame([{
-                        "Order_ID": datetime.now().strftime("%H%M%S"),
-                        "Customer": name,
-                        "Items": ", ".join(choice),
-                        "Total": df[df['Item'].isin(choice)]['Price'].sum(),
-                        "Status": "Pending"
-                    }])
-                    
-                    # Update the 'Orders' tab
-                    existing = conn.read(spreadsheet=URL, worksheet="Orders", ttl=0)
-                    updated = pd.concat([existing, order_data], ignore_index=True)
-                    conn.update(spreadsheet=URL, worksheet="Orders", data=updated)
-                    
-                    st.success(f"Order placed! Your ID is {order_data['Order_ID'][0]}")
-                    st.balloons()
-        else:
-            st.warning("Menu is empty. Add items to your Google Sheet.")
-            
-    except Exception as e:
-        st.error(f"⚠️ Connection Error: {e}")
-        st.info("Check if your Sheet tab is named exactly 'Menu' and 'Orders'")
+            # Save to the local database
+            c = conn.cursor()
+            c.execute('INSERT INTO orders VALUES (?,?,?,?,?)', (order_id, name, items_str, total, 'New'))
+            conn.commit()
+            st.success(f"Order #{order_id} placed! Total: ₹{total}")
+            st.balloons()
 
-# --- ADMIN DASHBOARD ---
 with tab2:
-    st.subheader("Manage Kitchen")
-    if st.button("🔄 Refresh Orders"):
+    st.subheader("Kitchen Management")
+    orders_data = pd.read_sql('SELECT * FROM orders', conn)
+    st.dataframe(orders_data)
+    
+    if st.button("Clear All Orders"):
+        conn.execute('DELETE FROM orders')
+        conn.commit()
         st.rerun()
-        
-    try:
-        orders = conn.read(spreadsheet=URL, worksheet="Orders", ttl=0)
-        st.write("Live Orders:")
-        st.dataframe(orders)
-        
-        # Simple Logic to Add New Items manually
-        st.divider()
-        order_to_edit = st.selectbox("Select Order ID to Modify", orders['Order_ID'].unique() if not orders.empty else ["None"])
-        add_item = st.selectbox("Add New Dish to this order", df['Item'].tolist() if not df.empty else ["None"])
-        
-        if st.button("Add Item & Update Bill"):
-            st.write(f"Adding {add_item} to {order_to_edit}...")
-            # Note: More advanced logic to save this back can be added as you grow!
-            
-    except:
-        st.write("No orders yet or Sheet Error.")
 
-# --- HELP SECTION ---
-with st.sidebar:
-    st.write("### Troubleshooting")
-    if st.button("Clear App Memory"):
-        st.cache_data.clear()
-        st.success("Memory Cleared!")
+    st.divider()
+    st.write("### Add New Menu Item")
+    new_item = st.text_input("Item Name")
+    new_price = st.number_input("Price", min_value=0)
+    if st.button("Add to Menu"):
+        conn.execute('INSERT INTO menu VALUES (?,?)', (new_item, new_price))
+        conn.commit()
+        st.success(f"Added {new_item} to menu!")
+        st.rerun()
