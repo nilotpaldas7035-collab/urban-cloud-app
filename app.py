@@ -1,97 +1,61 @@
-import streamlit as st
-import sqlite3
-import pandas as pd
-from datetime import datetime
-
-# --- 1. PAGE SETTINGS ---
-st.set_page_config(page_title="Urban Cloud Kitchen", page_icon="🍕", layout="centered")
-
-# Custom CSS for a better look
-st.markdown("""
-    <style>
-    .main { background-color: #fafafa; }
-    .stButton>button { width: 100%; border-radius: 10px; background-color: #ff4b4b; color: white; border: none; }
-    .stTextInput>div>div>input { border-radius: 10px; }
-    </style>
-    """, unsafe_allow_html=True)
-
-# --- 2. DATABASE INITIALIZATION ---
-def init_db():
-    # Connect to local SQLite file
-    conn = sqlite3.connect('urbancloud.db', check_same_thread=False)
-    c = conn.cursor()
-    # Create Menu table
-    c.execute('CREATE TABLE IF NOT EXISTS menu (item TEXT, price REAL)')
-    # Create Orders table
-    c.execute('CREATE TABLE IF NOT EXISTS orders (id TEXT, customer TEXT, items TEXT, total REAL, status TEXT, timestamp TEXT)')
-    
-    # Check if menu is empty, if so, add default items
-    c.execute('SELECT count(*) FROM menu')
-    if c.fetchone()[0] == 0:
-        default_items = [
-            ('Wood-fired Margherita', 350.0),
-            ('Chicken Burger', 180.0),
-            ('Paneer Sandwich', 120.0),
-            ('Customized Cake (1kg)', 1200.0)
-        ]
-        c.executemany('INSERT INTO menu VALUES (?,?)', default_items)
-    conn.commit()
-    return conn
-
-conn = init_db()
-
-# --- 3. THE APP INTERFACE ---
-st.title("👨‍🍳 Urban Cloud Kitchen")
-st.write("Guwahati's Premier Digital Kitchen")
-
-tab1, tab2 = st.tabs(["🛍️ Order Online", "🔑 Admin Dashboard"])
-
-# --- TAB 1: CUSTOMER ORDERING ---
-with tab1:
-    st.subheader("Place Your Order")
-    
-    # Load menu from database
-    menu_df = pd.read_sql('SELECT * FROM menu', conn)
-    
-    if not menu_df.empty:
-        with st.form("customer_order"):
-            cust_name = st.text_input("Enter Your Name")
-            selected_items = st.multiselect("Select Dishes", menu_df['item'].tolist())
-            
-            # Simple math for price display
-            estimated_total = menu_df[menu_df['item'].isin(selected_items)]['price'].sum()
-            st.write(f"### Total: ₹{estimated_total}")
-            
-            submit_btn = st.form_submit_button("Submit Order")
-            
-            if submit_btn:
-                if cust_name and selected_items:
-                    order_id = datetime.now().strftime("%H%M%S")
-                    items_str = ", ".join(selected_items)
-                    order_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-                    
-                    # Insert into Database
-                    c = conn.cursor()
-                    c.execute('INSERT INTO orders VALUES (?,?,?,?,?,?)', 
-                              (order_id, cust_name, items_str, estimated_total, 'Preparing', order_time))
-                    conn.commit()
-                    
-                    st.success(f"Order #{order_id} received! We'll start cooking right away.")
-                    st.balloons()
-                else:
-                    st.warning("Please enter your name and select at least one item.")
-    else:
-        st.info("The menu is empty. Please contact the kitchen.")
-
 # --- TAB 2: MANISH'S ADMIN DASHBOARD ---
 with tab2:
     st.subheader("Staff Login")
     
-    # 🔒 Password Gate
-    pwd = st.text_input("Enter Password", type="password")
+    # Using a key="admin_pwd" helps Streamlit track this specific box
+    pwd = st.text_input("Enter Password", type="password", key="admin_pwd")
     
-    if pwd == "urban786": # Change this to your secret password
+    if pwd == "urban786": 
         st.success("Access Granted. Hi Manish!")
         
-        # Display All Orders
-        orders_df = pd.read_sql
+        # We wrap this in an 'empty' container to help with smooth refreshing
+        admin_container = st.container()
+        
+        with admin_container:
+            orders_df = pd.read_sql('SELECT * FROM orders ORDER BY timestamp DESC', conn)
+            
+            st.write("### Active Orders")
+            if not orders_df.empty:
+                st.dataframe(orders_df, use_container_width=True)
+                
+                st.divider()
+                st.write("### 📝 Modify an Order")
+                # Add a unique key to every widget to prevent "Duplicate Widget" errors
+                order_to_fix = st.selectbox("Select Order ID", orders_df['id'].tolist(), key="fix_id")
+                item_to_add = st.selectbox("Add New Dish", menu_df['item'].tolist(), key="fix_item")
+                
+                if st.button("Add Item & Update Bill", key="add_btn"):
+                    add_price = menu_df[menu_df['item'] == item_to_add]['price'].values[0]
+                    c = conn.cursor()
+                    c.execute('SELECT items, total FROM orders WHERE id=?', (order_to_fix,))
+                    current_data = c.fetchone()
+                    
+                    new_items_list = current_data[0] + ", " + item_to_add
+                    new_total = current_data[1] + add_price
+                    
+                    c.execute('UPDATE orders SET items=?, total=? WHERE id=?', (new_items_list, new_total, order_to_fix))
+                    conn.commit()
+                    st.toast(f"Updated Order {order_to_fix}!") # Small popup notification
+                    st.rerun()
+
+                if st.button("🗑️ Clear All Orders", key="clear_btn"):
+                    c = conn.cursor()
+                    c.execute('DELETE FROM orders')
+                    conn.commit()
+                    st.rerun()
+            else:
+                st.info("No orders found in the database.")
+            
+            st.divider()
+            st.write("### ➕ Add Menu Item")
+            m_item = st.text_input("New Dish Name", key="new_m_item")
+            m_price = st.number_input("Dish Price", min_value=0.0, key="new_m_price")
+            if st.button("Update Menu", key="update_m_btn"):
+                if m_item:
+                    c = conn.cursor()
+                    c.execute('INSERT INTO menu VALUES (?,?)', (m_item, m_price))
+                    conn.commit()
+                    st.rerun()
+
+    elif pwd != "":
+        st.error("Access Denied. Please try again.")
